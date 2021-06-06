@@ -4,14 +4,23 @@ from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
 import torch.nn as nn
 import torch
+import torch.optim as optimizers
+import numpy as np
 
 
 LOSS_DICT = {
-    'binary_crossentropy': nn.BCELoss
+    'binary_crossentropy': nn.BCELoss,
+    'categorical_crossentropy': nn.CrossEntropyLoss
 }
 
 METRIC_DICT = {
-    'accuracy': lambda t, preds: accuracy_score(t, preds.data.cpu().numpy() > 0.5)
+    'accuracy': lambda t, preds: accuracy_score(
+        t.tolist(),
+        preds.argmax(axis=-1).tolist()
+    ) if preds.ndim > 1 and preds.shape[1] > 1 else accuracy_score(
+        t,
+        preds > 0.5
+    )
 }
 
 
@@ -21,8 +30,16 @@ class Model(nn.Module):
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
 
+    def _get_optimizer(self, optimizer):
+        if optimizer and type(optimizer) is not str:
+            return optimizer
+        elif optimizer == 'sgd':
+            return optimizers.SGD(self.parameters(), lr=0.01)
+        else:
+            return optimizers.SGD(self.parameters(), lr=0.01)
+
     def compile(self, optimizer, loss: str, metrics: List[str]):
-        self.optimizer = optimizer
+        self.optimizer = self._get_optimizer(optimizer)
         self.loss = LOSS_DICT[loss]()
         self.metrics = metrics
 
@@ -30,7 +47,8 @@ class Model(nn.Module):
         return self.loss(y, t)
 
     def _compute_metrics(self, t, preds):
-        return {metric: METRIC_DICT[metric](t, preds) for metric in self.metrics}
+        preds_ = preds.data.cpu().numpy() if type(preds) is not np.ndarray else preds
+        return {metric: METRIC_DICT[metric](t, preds_) for metric in self.metrics}
 
     def _train_step(self, x, t):
         self.train()
@@ -40,9 +58,7 @@ class Model(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-        metrics = self._compute_metrics(t, preds)
-
-        return loss, metrics
+        return loss, preds
 
     def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 0, device=None):
         n_batches = x_train.shape[0] // batch_size
@@ -50,7 +66,7 @@ class Model(nn.Module):
 
         for epoch in range(epochs):
             train_loss = 0.
-            train_metrics = dict()
+            train_metrics = {metric: 0. for metric in self.metrics}
             x_, t_ = shuffle(x_train, t_train)
             x_ = torch.Tensor(x_).to(device_)
             t_ = torch.Tensor(t_).to(device_)
@@ -58,9 +74,15 @@ class Model(nn.Module):
             for n_batch in range(n_batches):
                 start = n_batch * batch_size
                 end = start + batch_size
-                loss, train_metrics = self._train_step(
+                loss, preds = self._train_step(
                     x_[start:end], t_[start:end])
                 train_loss += loss.item()
+                train_metrics = {
+                    metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t_[start:end], preds).items()}
+
+            train_loss /= n_batches
+            train_metrics = {
+                metric: train_metrics[metric] / n_batches for metric in self.metrics}
 
             if verbose:
                 metrics_message = ', ' + ', '.join([
@@ -76,20 +98,82 @@ class Model(nn.Module):
 
         return self
 
-    def _test_step(self, x, t, device=None):
+    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None):
         device_ = device if device else self.device
-        x = torch.Tensor(x).to(device_)
-        t = torch.Tensor(t).to(device_)
+
+        for epoch in range(epochs):
+            train_loss = 0.
+            train_metrics = {metric: 0. for metric in self.metrics}
+
+            for (x, t) in train_data_loader:
+                x, t = x.to(device_), t.to(device_)
+                loss, preds = self._train_step(x, t)
+                train_loss += loss.item()
+                train_metrics = {
+                    metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t, preds).items()}
+
+            train_loss /= len(train_data_loader)
+            train_metrics = {
+                metric: train_metrics[metric] / len(train_data_loader) for metric in self.metrics}
+
+            if verbose:
+                metrics_message = ', ' + ', '.join([
+                    '{}: {:.3f}'.format(
+                        metric, metric_value
+                    ) for metric, metric_value in train_metrics.items()
+                ]) if self.metrics else ''
+                print('epoch: {}, loss: {:.3}{}'.format(
+                    epoch+1,
+                    train_loss,
+                    metrics_message
+                ))
+
+        return self
+
+    def _test_step(self, x, t):
         self.eval()
         preds = self(x)
         loss = self._compute_loss(t, preds)
 
         return loss, preds
 
-    def evaluate(self, x_test, t_test, verbose: int = 0):
-        loss, preds = self._test_step(x_test, t_test)
+    def evaluate(self, x_test, t_test, verbose: int = 0, device=None):
+        device_ = device if device else self.device
+        x = torch.Tensor(x_test).to(device_)
+        t = torch.Tensor(t_test).to(device_)
+
+        loss, preds = self._test_step(x, t)
         test_loss = loss.item()
         test_metrics = self._compute_metrics(t_test, preds)
+
+        if verbose:
+            metrics_message = ', ' + ', '.join([
+                'test_{}: {:.3f}'.format(
+                    metric, metric_value
+                ) for metric, metric_value in test_metrics.items()
+            ]) if self.metrics else ''
+            print('test_loss: {:.3f}{}'.format(
+                test_loss,
+                metrics_message
+            ))
+
+        return test_loss, test_metrics
+
+    def evaluate_data_loader(self, test_data_loader, verbose: int = 0, device=None):
+        test_loss = 0.
+        test_metrics = {metric: 0. for metric in self.metrics}
+        device_ = device if device else self.device
+
+        for (x, t) in test_data_loader:
+            x, t = x.to(device_), t.to(device_)
+            loss, preds = self._test_step(x, t)
+            test_loss += loss.item()
+            test_metrics = {
+                metric: test_metrics[metric] + value for metric, value in self._compute_metrics(t, preds).items()}
+
+        test_loss /= len(test_data_loader)
+        test_metrics = {
+            metric: test_metrics[metric] / len(test_data_loader) for metric in self.metrics}
 
         if verbose:
             metrics_message = ', ' + ', '.join([

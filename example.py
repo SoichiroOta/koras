@@ -1,6 +1,7 @@
 import koras
 from koras_examples import (
-    mlp_toy_problem
+    mlp_toy_problem,
+    mnist
 )
 
 
@@ -9,4 +10,4 @@ def main(module):
 
 
 if __name__ == '__main__':
-    main(mlp_toy_problem)
+    main(mnist)
