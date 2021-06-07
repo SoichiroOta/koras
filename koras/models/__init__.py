@@ -7,6 +7,8 @@ import torch
 import torch.optim as optimizers
 import numpy as np
 
+from koras.callbacks import EarlyStopping
+
 
 LOSS_DICT = {
     'binary_crossentropy': nn.BCELoss,
@@ -116,9 +118,10 @@ class Model(nn.Module):
             metrics_message
         )
 
-    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None):
-        hist = {f'val_{metric}': [] for metric in self.metrics}
-        hist['val_loss'] = []
+    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None, callbacks=None):
+        hist = {'loss': [], 'val_loss': []}
+        hist.update({metric: [] for metric in self.metrics})
+        hist.update({f'val_{metric}': [] for metric in self.metrics})
         device_ = device if device else self.device
 
         for epoch in range(epochs):
@@ -150,6 +153,9 @@ class Model(nn.Module):
                 val_metrics = {
                     f'val_{metric}': val_metrics[metric] / len(val_data_loader) for metric in self.metrics}
 
+                hist['loss'].append(train_loss)
+                for metric, value in train_metrics.items():
+                    hist[metric].append(value)
                 hist['val_loss'].append(val_loss)
                 for metric, value in val_metrics.items():
                     hist[metric].append(value)
@@ -174,6 +180,13 @@ class Model(nn.Module):
                     epoch+1,
                     train_log_message
                 ))
+
+            if not callbacks:
+                continue
+
+            for callback in callbacks:
+                if type(callback) is EarlyStopping and callback(val_loss):  # 早期終了判定
+                    return hist
 
         return hist
 

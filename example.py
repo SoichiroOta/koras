@@ -2,7 +2,8 @@ import koras
 from koras_examples import (
     mlp_toy_problem,
     mnist,
-    mnist_plot
+    mnist_plot,
+    mnist_early_stopping
 )
 
 
@@ -11,4 +12,4 @@ def main(module):
 
 
 if __name__ == '__main__':
-    main(mnist_plot)
+    main(mnist_early_stopping)
