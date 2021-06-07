@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 
 from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
@@ -60,6 +60,13 @@ class Model(nn.Module):
 
         return loss, preds
 
+    def _val_step(self, x, t):
+        self.eval()
+        preds = self(x)
+        loss = self._compute_loss(t, preds)
+
+        return loss, preds
+
     def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 0, device=None):
         n_batches = x_train.shape[0] // batch_size
         device_ = device if device else self.device
@@ -98,12 +105,27 @@ class Model(nn.Module):
 
         return self
 
-    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None):
+    def _get_log_message(self, loss, metrics_dict):
+        metrics_message = ', ' + ', '.join([
+            '{}: {:.3f}'.format(
+                metric, metric_value
+            ) for metric, metric_value in metrics_dict.items()
+        ]) if self.metrics else ''
+        return 'loss: {:.3}{}'.format(
+            loss,
+            metrics_message
+        )
+
+    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None):
+        hist = {f'val_{metric}': [] for metric in self.metrics}
+        hist['val_loss'] = []
         device_ = device if device else self.device
 
         for epoch in range(epochs):
             train_loss = 0.
             train_metrics = {metric: 0. for metric in self.metrics}
+            val_loss = 0.
+            val_metrics = {metric: 0. for metric in self.metrics}
 
             for (x, t) in train_data_loader:
                 x, t = x.to(device_), t.to(device_)
@@ -116,26 +138,47 @@ class Model(nn.Module):
             train_metrics = {
                 metric: train_metrics[metric] / len(train_data_loader) for metric in self.metrics}
 
-            if verbose:
-                metrics_message = ', ' + ', '.join([
-                    '{}: {:.3f}'.format(
-                        metric, metric_value
-                    ) for metric, metric_value in train_metrics.items()
-                ]) if self.metrics else ''
-                print('epoch: {}, loss: {:.3}{}'.format(
+            if val_data_loader:
+                for (x, t) in val_data_loader:
+                    x, t = x.to(device), t.to(device)
+                    loss, preds = self._val_step(x, t)
+                    val_loss += loss.item()
+                    val_metrics = {
+                        metric: val_metrics[metric] + value for metric, value in self._compute_metrics(t, preds).items()}
+
+                val_loss /= len(val_data_loader)
+                val_metrics = {
+                    f'val_{metric}': val_metrics[metric] / len(val_data_loader) for metric in self.metrics}
+
+                hist['val_loss'].append(val_loss)
+                for metric, value in val_metrics.items():
+                    hist[metric].append(value)
+
+            if not verbose:
+                continue
+
+            train_log_message = self._get_log_message(
+                train_loss, train_metrics
+            )
+            if val_data_loader:
+                val_log_message = self._get_log_message(
+                    val_loss, val_metrics
+                )
+                print('epoch: {}, {}, val_{}'.format(
                     epoch+1,
-                    train_loss,
-                    metrics_message
+                    train_log_message,
+                    val_log_message
+                ))
+            else:
+                print('epoch: {}, {}'.format(
+                    epoch+1,
+                    train_log_message
                 ))
 
-        return self
+        return hist
 
     def _test_step(self, x, t):
-        self.eval()
-        preds = self(x)
-        loss = self._compute_loss(t, preds)
-
-        return loss, preds
+        return self._val_step(x, t)
 
     def evaluate(self, x_test, t_test, verbose: int = 0, device=None):
         device_ = device if device else self.device
