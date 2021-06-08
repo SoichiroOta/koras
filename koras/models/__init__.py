@@ -1,4 +1,5 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
+import math
 
 from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
@@ -12,7 +13,8 @@ from koras.callbacks import EarlyStopping
 
 LOSS_DICT = {
     'binary_crossentropy': nn.BCELoss,
-    'categorical_crossentropy': nn.CrossEntropyLoss
+    'categorical_crossentropy': nn.CrossEntropyLoss,
+    'mean_squared_error': lambda: nn.MSELoss(reduction='mean')
 }
 
 METRIC_DICT = {
@@ -37,19 +39,24 @@ class Model(nn.Module):
             return optimizer
         elif optimizer == 'sgd':
             return optimizers.SGD(self.parameters(), lr=0.01)
+        elif optimizer == 'adam':
+            return optimizers.Adam(self.parameters(),
+                                   lr=0.001,
+                                   betas=(0.9, 0.999), amsgrad=True)
         else:
             return optimizers.SGD(self.parameters(), lr=0.01)
 
-    def compile(self, optimizer, loss: str, metrics: List[str]):
+    def compile(self, optimizer, loss: str, metrics: Optional[List[str]] = None):
         self.optimizer = self._get_optimizer(optimizer)
         self.loss = LOSS_DICT[loss]()
-        self.metrics = metrics
+        self.metrics = metrics if metrics else []
 
     def _compute_loss(self, t, y):
         return self.loss(y, t)
 
     def _compute_metrics(self, t, preds):
-        preds_ = preds.data.cpu().numpy() if type(preds) is not np.ndarray else preds
+        preds_ = preds if type(
+            preds) is np.ndarray else preds.data.cpu().numpy()
         return {metric: METRIC_DICT[metric](t, preds_) for metric in self.metrics}
 
     def _train_step(self, x, t):
@@ -69,18 +76,31 @@ class Model(nn.Module):
 
         return loss, preds
 
-    def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 0, device=None):
-        n_batches = x_train.shape[0] // batch_size
+    def _init_hist(self) -> Dict[str, List]:
+        hist = {'loss': [], 'val_loss': []}
+        hist.update({metric: [] for metric in self.metrics})
+        hist.update({f'val_{metric}': [] for metric in self.metrics})
+        return hist
+
+    def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 0, device=None, validation_data=None, callbacks=None) -> Dict[str, List]:
+        hist = self._init_hist()
+        if validation_data:
+            x_val, t_val = validation_data
+        n_batches_train = math.ceil(x_train.shape[0] / batch_size)
+        if validation_data:
+            n_batches_val = math.ceil(x_val.shape[0] / batch_size)
         device_ = device if device else self.device
 
         for epoch in range(epochs):
             train_loss = 0.
+            val_loss = 0.
             train_metrics = {metric: 0. for metric in self.metrics}
+            val_metrics = {metric: 0. for metric in self.metrics}
             x_, t_ = shuffle(x_train, t_train)
             x_ = torch.Tensor(x_).to(device_)
             t_ = torch.Tensor(t_).to(device_)
 
-            for n_batch in range(n_batches):
+            for n_batch in range(n_batches_train):
                 start = n_batch * batch_size
                 end = start + batch_size
                 loss, preds = self._train_step(
@@ -89,23 +109,63 @@ class Model(nn.Module):
                 train_metrics = {
                     metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t_[start:end], preds).items()}
 
-            train_loss /= n_batches
+            train_loss /= n_batches_train
             train_metrics = {
-                metric: train_metrics[metric] / n_batches for metric in self.metrics}
+                metric: train_metrics[metric] / n_batches_train for metric in self.metrics}
 
-            if verbose:
-                metrics_message = ', ' + ', '.join([
-                    '{}: {:.3f}'.format(
-                        metric, metric_value
-                    ) for metric, metric_value in train_metrics.items()
-                ]) if self.metrics else ''
-                print('epoch: {}, loss: {:.3}{}'.format(
+            hist['loss'].append(train_loss)
+            for metric, value in train_metrics.items():
+                hist[metric].append(value)
+
+            if validation_data:
+                for n_batch in range(n_batches_val):
+                    start = n_batch * batch_size
+                    end = start + batch_size
+                    loss, preds = self._val_step(
+                        torch.Tensor(x_val[start:end]).to(device_),
+                        torch.Tensor(t_val[start:end]).to(device_)
+                    )
+                    val_loss += loss.item()
+                    val_metrics = {
+                        metric: val_metrics[metric] + value for metric, value in self._compute_metrics(t_val[start:end], preds).items()}
+
+                val_loss /= n_batches_val
+                val_metrics = {
+                    f'val_{metric}': val_metrics[metric] / n_batches_val for metric in self.metrics}
+
+                hist['val_loss'].append(val_loss)
+                for metric, value in val_metrics.items():
+                    hist[metric].append(value)
+
+            if not verbose:
+                continue
+
+            train_log_message = self._get_log_message(
+                train_loss, train_metrics
+            )
+            if validation_data:
+                val_log_message = self._get_log_message(
+                    val_loss, val_metrics
+                )
+                print('epoch: {}, {}, val_{}'.format(
                     epoch+1,
-                    train_loss,
-                    metrics_message
+                    train_log_message,
+                    val_log_message
+                ))
+            else:
+                print('epoch: {}, {}'.format(
+                    epoch+1,
+                    train_log_message
                 ))
 
-        return self
+            if not callbacks:
+                continue
+
+            for callback in callbacks:
+                if type(callback) is EarlyStopping and callback(val_loss):  # 早期終了判定
+                    return hist
+
+        return hist
 
     def _get_log_message(self, loss, metrics_dict):
         metrics_message = ', ' + ', '.join([
@@ -118,10 +178,8 @@ class Model(nn.Module):
             metrics_message
         )
 
-    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None, callbacks=None):
-        hist = {'loss': [], 'val_loss': []}
-        hist.update({metric: [] for metric in self.metrics})
-        hist.update({f'val_{metric}': [] for metric in self.metrics})
+    def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None, callbacks=None) -> Dict:
+        hist = self._init_hist()
         device_ = device if device else self.device
 
         for epoch in range(epochs):
@@ -141,6 +199,10 @@ class Model(nn.Module):
             train_metrics = {
                 metric: train_metrics[metric] / len(train_data_loader) for metric in self.metrics}
 
+            hist['loss'].append(train_loss)
+            for metric, value in train_metrics.items():
+                hist[metric].append(value)
+
             if val_data_loader:
                 for (x, t) in val_data_loader:
                     x, t = x.to(device), t.to(device)
@@ -153,9 +215,6 @@ class Model(nn.Module):
                 val_metrics = {
                     f'val_{metric}': val_metrics[metric] / len(val_data_loader) for metric in self.metrics}
 
-                hist['loss'].append(train_loss)
-                for metric, value in train_metrics.items():
-                    hist[metric].append(value)
                 hist['val_loss'].append(val_loss)
                 for metric, value in val_metrics.items():
                     hist[metric].append(value)
@@ -193,6 +252,17 @@ class Model(nn.Module):
     def _test_step(self, x, t):
         return self._val_step(x, t)
 
+    def _print_test_message(self, test_loss, test_metrics):
+        metrics_message = ', ' + ', '.join([
+            'test_{}: {:.3f}'.format(
+                metric, metric_value
+            ) for metric, metric_value in test_metrics.items()
+        ]) if self.metrics else ''
+        print('test_loss: {:.3f}{}'.format(
+            test_loss,
+            metrics_message
+        ))
+
     def evaluate(self, x_test, t_test, verbose: int = 0, device=None):
         device_ = device if device else self.device
         x = torch.Tensor(x_test).to(device_)
@@ -203,15 +273,7 @@ class Model(nn.Module):
         test_metrics = self._compute_metrics(t_test, preds)
 
         if verbose:
-            metrics_message = ', ' + ', '.join([
-                'test_{}: {:.3f}'.format(
-                    metric, metric_value
-                ) for metric, metric_value in test_metrics.items()
-            ]) if self.metrics else ''
-            print('test_loss: {:.3f}{}'.format(
-                test_loss,
-                metrics_message
-            ))
+            self._print_test_message(test_loss, test_metrics)
 
         return test_loss, test_metrics
 
@@ -232,14 +294,6 @@ class Model(nn.Module):
             metric: test_metrics[metric] / len(test_data_loader) for metric in self.metrics}
 
         if verbose:
-            metrics_message = ', ' + ', '.join([
-                'test_{}: {:.3f}'.format(
-                    metric, metric_value
-                ) for metric, metric_value in test_metrics.items()
-            ]) if self.metrics else ''
-            print('test_loss: {:.3f}{}'.format(
-                test_loss,
-                metrics_message
-            ))
+            self._print_test_message(test_loss, test_metrics)
 
         return test_loss, test_metrics
