@@ -29,10 +29,12 @@ METRIC_DICT = {
 
 
 class Model(nn.Module):
-    def __init__(self):
+    def __init__(self, input_type=torch.Tensor, output_type=torch.Tensor):
         super().__init__()
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
+        self.input_type = input_type
+        self.output_type = output_type
 
     def _get_optimizer(self, optimizer):
         if optimizer and type(optimizer) is not str:
@@ -97,8 +99,8 @@ class Model(nn.Module):
             train_metrics = {metric: 0. for metric in self.metrics}
             val_metrics = {metric: 0. for metric in self.metrics}
             x_, t_ = shuffle(x_train, t_train)
-            x_ = torch.Tensor(x_).to(device_)
-            t_ = torch.Tensor(t_).to(device_)
+            x_ = self.input_type(x_).to(device_)
+            t_ = self.output_type(t_).to(device_)
 
             for n_batch in range(n_batches_train):
                 start = n_batch * batch_size
@@ -122,8 +124,8 @@ class Model(nn.Module):
                     start = n_batch * batch_size
                     end = start + batch_size
                     loss, preds = self._val_step(
-                        torch.Tensor(x_val[start:end]).to(device_),
-                        torch.Tensor(t_val[start:end]).to(device_)
+                        self.input_type(x_val[start:end]).to(device_),
+                        self.output_type(t_val[start:end]).to(device_)
                     )
                     val_loss += loss.item()
                     val_metrics = {
@@ -265,8 +267,8 @@ class Model(nn.Module):
 
     def evaluate(self, x_test, t_test, verbose: int = 0, device=None):
         device_ = device if device else self.device
-        x = torch.Tensor(x_test).to(device_)
-        t = torch.Tensor(t_test).to(device_)
+        x = self.input_type(x_test).to(device_)
+        t = self.output_type(t_test).to(device_)
 
         loss, preds = self._test_step(x, t)
         test_loss = loss.item()
