@@ -5,7 +5,8 @@ from koras_examples import (
     mnist_plot,
     mnist_early_stopping,
     sin_rnn,
-    imdb_birnn
+    imdb_birnn,
+    save_load_model
 )
 
 
@@ -14,4 +15,4 @@ def main(module):
 
 
 if __name__ == '__main__':
-    main(imdb_birnn)
+    main(save_load_model)

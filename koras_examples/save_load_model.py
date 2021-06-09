@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 import torch
 import torch.nn as nn
@@ -12,25 +11,22 @@ import torchvision.transforms as transforms
 
 
 def main(koras):
-
     class DNN(koras.models.Model):
+
         def __init__(self, input_dim, hidden_dim, output_dim):
             super().__init__()
             self.l1 = nn.Linear(input_dim, hidden_dim)
+            self.b1 = nn.BatchNorm1d(hidden_dim)
             self.a1 = nn.ReLU()
             self.d1 = nn.Dropout(0.5)
-            self.l2 = nn.Linear(hidden_dim, hidden_dim)
-            self.a2 = nn.ReLU()
-            self.d2 = nn.Dropout(0.5)
-            self.l3 = nn.Linear(hidden_dim, hidden_dim)
-            self.a3 = nn.ReLU()
-            self.d3 = nn.Dropout(0.5)
-            self.l4 = nn.Linear(hidden_dim, output_dim)
+            self.l2 = nn.Linear(hidden_dim, output_dim)
 
-            self.layers = [self.l1, self.a1, self.d1,
-                           self.l2, self.a2, self.d2,
-                           self.l3, self.a3, self.d3,
-                           self.l4]
+            self.layers = [self.l1, self.b1, self.a1, self.d1,
+                           self.l2]
+
+            for layer in self.layers:
+                if type(layer) == nn.Linear:
+                    nn.init.kaiming_normal_(layer.weight)
 
         def forward(self, x):
             for layer in self.layers:
@@ -80,42 +76,34 @@ def main(koras):
     model = DNN(784, 200, 10).to(device)
 
     '''
-    3. モデルの学習
+    3. モデルの学習・保存
     '''
-    model.compile(optimizer='sgd',
+    model.compile(optimizer='adam',
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
 
-    es = koras.callbacks.EarlyStopping(patience=5, verbose=1)
+    model.fit_data_loader(train_dataloader,
+                          epochs=10,
+                          verbose=2,
+                          val_data_loader=val_dataloader)
 
-    hist = model.fit_data_loader(train_dataloader,
-                                 epochs=1000,
-                                 verbose=2,
-                                 val_data_loader=val_dataloader,
-                                 callbacks=[es])
+    model.save('models/model_torch.h5')  # モデルを保存
+
+    print('model weights saved to: {}'.format('models/model_torch.h5'))
 
     '''
-    4. モデルの評価
+    4. モデルの読み込み・評価
     '''
-    # 検証データの誤差の可視化
-    loss = hist['loss']
-    val_loss = hist['val_loss']
+    del model  # これまで学習していたモデルを削除
 
-    fig = plt.figure()
-    plt.rc('font', family='serif')
-    plt.plot(range(len(loss)), loss,
-             color='gray', linewidth=1,
-             label='loss')
-    plt.plot(range(len(val_loss)), val_loss,
-             color='black', linewidth=1,
-             label='val_loss')
-    plt.xlabel('epochs')
-    plt.ylabel('loss')
-    plt.legend()
-    # plt.savefig('output.jpg')
-    plt.show()
+    model = DNN(784, 200, 10).to(device)  # 新しいモデルを初期化
+    model.load('models/model_torch.h5')  # 学習済モデルの重みを設定
+
+    print('-' * 20)
+    print('model loaded.')
 
     # テストデータの評価
+    model.set_loss('categorical_crossentropy').set_metrics(['accuracy'])
     loss, metrics = model.evaluate_data_loader(test_dataloader, verbose=0)
     print('test_loss: {:.3f}, test_acc: {:.3f}'.format(
         loss,

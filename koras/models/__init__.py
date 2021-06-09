@@ -35,6 +35,9 @@ class Model(nn.Module):
             'cuda' if torch.cuda.is_available() else 'cpu')
         self.input_type = input_type
         self.output_type = output_type
+        self.optimizer = None
+        self.loss = None
+        self.metrics = []
 
     def _get_optimizer(self, optimizer):
         if optimizer and type(optimizer) is not str:
@@ -48,10 +51,26 @@ class Model(nn.Module):
         else:
             return optimizers.SGD(self.parameters(), lr=0.01)
 
-    def compile(self, optimizer, loss: str, metrics: Optional[List[str]] = None):
-        self.optimizer = self._get_optimizer(optimizer)
-        self.loss = LOSS_DICT[loss]()
+    def _get_loss(self, loss: str):
+        return LOSS_DICT[loss]()
+
+    def set_loss(self, loss):
+        if type(loss) is str:
+            self.loss = self._get_loss(loss)
+        else:
+            self.loss = loss
+        return self
+
+    def set_metrics(self, metrics: List[str]):
         self.metrics = metrics if metrics else []
+        return self
+
+    def compile(self, optimizer, loss, metrics: Optional[List[str]] = None):
+        self.optimizer = self._get_optimizer(optimizer)
+        self.set_loss(loss)
+        if type(metrics) is list:
+            self.set_metrics(metrics)
+        return self
 
     def _compute_loss(self, t, y):
         return self.loss(y, t)
@@ -169,7 +188,7 @@ class Model(nn.Module):
 
         return hist
 
-    def _get_log_message(self, loss, metrics_dict):
+    def _get_log_message(self, loss: str, metrics_dict):
         metrics_message = ', ' + ', '.join([
             '{}: {:.3f}'.format(
                 metric, metric_value
@@ -299,3 +318,11 @@ class Model(nn.Module):
             self._print_test_message(test_loss, test_metrics)
 
         return test_loss, test_metrics
+
+    def save(self, file_path: str):
+        torch.save(self.state_dict(),
+                   file_path)  # モデルの重みを保存
+
+    def load(self, file_path: str):
+        self.load_state_dict(torch.load(file_path))
+        return self

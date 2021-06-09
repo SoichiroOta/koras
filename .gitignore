@@ -1,4 +1,5 @@
 deeplearning-keras-tf2-torch/
+models/
 .DS_Store
 **/data/*
 !**/data/.keep
