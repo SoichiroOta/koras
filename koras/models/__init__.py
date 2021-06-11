@@ -3,6 +3,7 @@ import math
 
 from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
+from sklearn.metrics.pairwise import cosine_similarity
 import torch.nn as nn
 import torch
 import torch.optim as optimizers
@@ -25,7 +26,10 @@ METRIC_DICT = {
     ) if preds.ndim > 1 and preds.shape[1] > 1 else accuracy_score(
         t,
         preds > 0.5
-    )
+    ),
+    'cosine_similarity': lambda t, preds: np.mean([
+        cosine_similarity(t_.reshape(1, -1), pred.reshape(1, -1))[0][0] for t_, pred in zip(t, preds)
+    ])
 }
 
 
