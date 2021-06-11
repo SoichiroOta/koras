@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch
 import torch.optim as optimizers
 import numpy as np
+from tqdm import tqdm
 
 from koras.callbacks import EarlyStopping
 
@@ -103,7 +104,20 @@ class Model(nn.Module):
         hist.update({f'val_{metric}': [] for metric in self.metrics})
         return hist
 
-    def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 0, device=None, validation_data=None, callbacks=None) -> Dict[str, List]:
+    def _train(self, n_batch, batch_size, x_, t_, train_loss, train_metrics):
+        start = n_batch * batch_size
+        end = start + batch_size
+        loss, preds = self._train_step(
+            x_[start:end],
+            t_[start:end]
+        )
+        train_loss += loss.item()
+        train_metrics = {
+            metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t_[start:end], preds).items()
+        }
+        return train_loss, train_metrics
+
+    def fit(self, x_train, t_train, epochs: int, batch_size: int, verbose: int = 1, device=None, validation_data=None, callbacks=None) -> Dict[str, List]:
         hist = self._init_hist()
         if validation_data:
             x_val, t_val = validation_data
@@ -121,14 +135,26 @@ class Model(nn.Module):
             x_ = self.input_type(x_).to(device_)
             t_ = self.output_type(t_).to(device_)
 
-            for n_batch in range(n_batches_train):
-                start = n_batch * batch_size
-                end = start + batch_size
-                loss, preds = self._train_step(
-                    x_[start:end], t_[start:end])
-                train_loss += loss.item()
-                train_metrics = {
-                    metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t_[start:end], preds).items()}
+            if verbose == 1:
+                for n_batch in tqdm(range(n_batches_train)):
+                    train_loss, train_metrics = self._train(
+                        n_batch,
+                        batch_size,
+                        x_,
+                        t_,
+                        train_loss,
+                        train_metrics
+                    )
+            else:
+                for n_batch in range(n_batches_train):
+                    train_loss, train_metrics = self._train(
+                        n_batch,
+                        batch_size,
+                        x_,
+                        t_,
+                        train_loss,
+                        train_metrics
+                    )
 
             train_loss /= n_batches_train
             train_metrics = {
@@ -199,6 +225,15 @@ class Model(nn.Module):
             metrics_message
         )
 
+    def _train_with_data_loader(self, x, t, device_, train_loss, train_metrics):
+        x, t = x.to(device_), t.to(device_)
+        loss, preds = self._train_step(x, t)
+        train_loss += loss.item()
+        train_metrics = {
+            metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t, preds).items()
+        }
+        return train_loss, train_metrics
+
     def fit_data_loader(self, train_data_loader, epochs: int, verbose: int = 0, device=None, val_data_loader=None, callbacks=None) -> Dict:
         hist = self._init_hist()
         device_ = device if device else self.device
@@ -209,12 +244,24 @@ class Model(nn.Module):
             val_loss = 0.
             val_metrics = {metric: 0. for metric in self.metrics}
 
-            for (x, t) in train_data_loader:
-                x, t = x.to(device_), t.to(device_)
-                loss, preds = self._train_step(x, t)
-                train_loss += loss.item()
-                train_metrics = {
-                    metric: train_metrics[metric] + value for metric, value in self._compute_metrics(t, preds).items()}
+            if verbose == 1:
+                for (x, t) in tqdm(train_data_loader):
+                    train_loss, train_metrics = self._train_with_data_loader(
+                        x,
+                        t,
+                        device_,
+                        train_loss,
+                        train_metrics
+                    )
+            else:
+                for (x, t) in train_data_loader:
+                    train_loss, train_metrics = self._train_with_data_loader(
+                        x,
+                        t,
+                        device_,
+                        train_loss,
+                        train_metrics
+                    )
 
             train_loss /= len(train_data_loader)
             train_metrics = {
