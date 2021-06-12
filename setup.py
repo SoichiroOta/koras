@@ -3,7 +3,7 @@ from setuptools import setup, find_packages, version
 
 setup(
     name='koras',
-    version='0.0.0',
+    version='0.1.0',
     packages=find_packages(exclude=['koras_examples']),
     install_requires=[
         'matplotlib==3.4.2',
